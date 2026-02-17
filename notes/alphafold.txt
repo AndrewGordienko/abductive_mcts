@@ -1,0 +1,141 @@
+AlphaFold keeps two representations alive at once
+1. a sequence representation (per-residue features)
+2. a pair representation (for every residue pair: distance/orientation beliefs)
+
+These flow through a giant transformer called the Evoformer
+
+Inside:
+- runs attention along the sequence
+- runs attention across residue pairs
+- performs triangle updates (A to B to C reasoning)
+- exchanges information between sequences and pair spaces
+
+AlphaFold is goal-conditioned geometry reasoning.
+it does: “infer what must be true for this outcome to exist.”
+
+---
+
+Architecture
+
+Input: MKTFFVLL
+
+Step 1: Build the input tensors
+    AlphaFold immediately searches massive databases and finds thousands of similar sequences from evolution.
+
+    This gives an MSA (multiple sequence alignment):
+    MSA: [num_sequences, N]
+    ≈ [2000, 300]
+    Each row is another organism’s version of the same protein.
+
+    From this, AlphaFold constructs two core tensors:
+
+        1. Sequence tensor
+
+        One vector per residue:
+        seq = [N, C]
+        ≈ [300, 384]
+
+        Each amino acid becomes a 384-dimensional embedding.
+        Think: node features.
+
+        2. Pair tensor
+
+        For every pair of residues:
+        pair = [N, N, C]
+        ≈ [300, 300, 128]
+
+        This is a 300×300 matrix where each cell stores:
+        – predicted distance
+        – relative orientation
+        – confidence
+        – learned geometric features
+
+Step 2 — Evoformer
+    Each block does:
+
+    Sequence attention:
+    Residues attend to other residues along the chain.
+
+    Pair attention:
+    Residue-pairs attend to other residue-pairs.
+
+    Triangle updates:
+    Triplets enforce geometry:
+
+Step 3 — Structure Module
+    Now AlphaFold converts beliefs → atoms.
+    Using something called Invariant Point Attention.
+
+    Each residue proposes a 3D frame.
+    They attend to each other using distances + orientations.
+    Then coordinates are adjusted.
+
+The abductive chess idea is AlphaFold thinking applied to games.
+
+---
+
+AlphaFold chose:
+- nodes = residues
+- edges = every residue pair
+- edge features = learned geometry beliefs
+
+Applying to chess:
+
+Step 1 — Define nodes
+
+Each piece becomes a node, each node embedding includes:
+- piece type (pawn/knight/…)
+- color
+- square (x,y)
+- mobility features (legal moves count, attack count)
+- phase info (opening/middle/endgame scalar)
+- king-distance
+- pawn-structure flag
+
+So you start with something like:
+    nodes: [num_pieces, C]
+
+Residues → Pieces
+
+Step 2 — Define pair tensor
+
+pair: [pieces, pieces, C]
+
+What lives inside pair[i][j]:
+
+You manually construct initial features like:
+- relative dx, dy
+- Manhattan / Chebyshev distance
+- does i attack j
+- does j attack i
+- is i pinned to king by j
+- same file / rank / diagonal
+- is path blocked
+- x-ray possible
+- discovered attack possible
+
+Step 3:
+
+(nodes, pairs) -> EvoBlock -> (nodes', pairs')
+
+Inside the block:
+
+First: node self-attention.
+Second: pair self-attention.
+Third: triangle updates on pairs. (Does not exist in regular transformers)
+
+Triangle updates introduce three-body reasoning:
+
+A → K
+K → B
+Therefore update A → B.
+
+for i in pieces:
+  for j in pieces:
+    for k in pieces:
+       pairs[i][j] += f(pairs[i][k], pairs[k][j])
+
+Fourth: node ↔ pair exchange.
+
+If piece i is in many strong relations, its node embedding should reflect that.
+If a piece becomes powerful (say queen centralized), its relationships should change.
