@@ -1,0 +1,27 @@
+# --- AlphaZero Logic & Data ---
+# Ignore the training data (replay buffer)
+data/replay_buffer/*.npz
+data/
+
+# Ignore model checkpoints (keep the directory, ignore the weights)
+models/*.pth
+models/*.pt
+
+# --- Python Environment ---
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+pip-log.txt
+setup.cfg
+
+# --- Dashboard & UI ---
+# If you use node/npm for any frontend tools
+node_modules/
+.DS_Store
+
+# --- Jupyter Notebooks ---
+.ipynb_checkpoints
