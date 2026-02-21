@@ -87,7 +87,7 @@ if __name__ == "__main__":
         processes.append(dashboard_p)
 
         # 3. Start Workers
-        num_workers = 4 
+        num_workers = 8
         for i in range(num_workers):
             p = mp.Process(
                 target=worker_task, 

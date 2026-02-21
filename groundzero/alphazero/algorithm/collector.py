@@ -15,7 +15,6 @@ class DataCollector:
         
         self.total_games = 0
         self.total_samples = 0
-        self.phase_times = {"opening": 0, "midgame": 0, "endgame": 0}
 
     def update_model(self, path):
         if os.path.exists(path):
@@ -29,11 +28,18 @@ class DataCollector:
         game_data = []
         move_count = 0
         current_game_fens = [board.fen()]
-        self.phase_times = {"opening": 0, "midgame": 0, "endgame": 0}
+        phase_times = {"opening": 0, "midgame": 0, "endgame": 0}
         
-        # --- ALPHA-LAB SETTINGS ---
-        MAX_MOVES = 200
-        TEMP_THRESHOLD = 30 
+        root = None 
+
+        # --- DYNAMIC SETTINGS PER GAME ---
+        MAX_MOVES = 250
+        # Randomize temp threshold so some games are more exploratory
+        temp_threshold = np.random.randint(15, 35) 
+        
+        # 10% of games will disable resignation to train endgame/checkmate finishing
+        can_resign = np.random.random() > 0.10
+        
         MIN_RESIGN_MOVE = 60      
         RESIGN_THRESHOLD = 0.98   
         RESIGN_COUNT = 8          
@@ -43,10 +49,14 @@ class DataCollector:
             self.evaluator.clear_cache()
             
             start_search = time.time()
-            best_move, pi_dist = self.engine.search(board, is_training=True)
+            best_move, pi_dist, root = self.engine.search(board, is_training=True, root=root)
             search_duration = time.time() - start_search
 
-            if move_count > TEMP_THRESHOLD:
+            probs_arr = np.array(list(pi_dist.values()), dtype=np.float32)
+            entropy = -np.sum(probs_arr * np.log2(probs_arr + 1e-9))
+
+            # Move selection with dynamic threshold
+            if move_count > temp_threshold:
                 selected_move = max(pi_dist, key=pi_dist.get)
                 final_pi = {m: (1.0 if m == selected_move else 0.0) for m in pi_dist}
             else:
@@ -54,25 +64,31 @@ class DataCollector:
                 selected_move = np.random.choice(moves, p=list(pi_dist.values()))
                 final_pi = pi_dist
 
-            probs_arr = np.array(list(pi_dist.values()), dtype=np.float32)
-            entropy = -np.sum(probs_arr * np.log2(probs_arr + 1e-9))
+            if selected_move in root.children:
+                root = root.children[selected_move]
+            else:
+                root = None 
 
             if stats is not None and worker_id is not None:
                 val = float(self.evaluator.latest_value)
-                if move_count > MIN_RESIGN_MOVE and abs(val) > RESIGN_THRESHOLD: resign_streak += 1
-                else: resign_streak = 0
+                
+                # Check resignation logic
+                if can_resign and move_count > MIN_RESIGN_MOVE and abs(val) > RESIGN_THRESHOLD:
+                    resign_streak += 1
+                else:
+                    resign_streak = 0
 
                 stats[worker_id] = {
                     "status": "Resigning..." if resign_streak > 0 else "Thinking (Batched)",
                     "move_count": move_count,
                     "last_depth": self.engine.latest_depth,
-                    "nps": int(self.engine.params.get('SIMULATIONS', 400) / max(search_duration, 0.001)),
+                    "nps": int(self.engine.params['SIMULATIONS'] / max(search_duration, 0.001)),
                     "value": val,
                     "entropy": float(entropy),
                     "inference_ms": float(self.evaluator.last_inference_time * 1000),
                     "fen": board.fen(),
-                    "history_fens": current_game_fens,
-                    "phase_times": self.phase_times.copy(),
+                    "history_fens": list(current_game_fens),
+                    "phase_times": phase_times.copy(),
                     "total_games": self.total_games,
                     "total_samples": self.total_samples,
                     "heatmap": self.engine.latest_heatmap,
@@ -89,36 +105,26 @@ class DataCollector:
             board.push(selected_move)
             current_game_fens.append(board.fen())
             
-            if move_count < 20: self.phase_times["opening"] += search_duration
-            elif move_count < 40: self.phase_times["midgame"] += search_duration
-            else: self.phase_times["endgame"] += search_duration
+            if move_count < 20: phase_times["opening"] += search_duration
+            elif move_count < 40: phase_times["midgame"] += search_duration
+            else: phase_times["endgame"] += search_duration
             
             move_count += 1
             if resign_streak >= RESIGN_COUNT: break
 
-        # --- FIX: Outcome String-to-Float Mapping ---
+        # Outcome resolution
         if board.is_game_over():
-            res = board.result() # returns "1-0", "0-1", or "1/2-1/2"
-            if res == "1-0":
-                outcome = 1.0
-            elif res == "0-1":
-                outcome = -1.0
-            else:
-                outcome = 0.0 # Draw
+            res = board.result()
+            outcome = 1.0 if res == "1-0" else -1.0 if res == "0-1" else 0.0
         else:
-            # Resignation or Max Moves: use the model's value estimate
+            # If the game was ended by resignation, use the model's high-confidence value
             outcome = float(self.evaluator.latest_value)
 
         self.total_games += 1
         self.total_samples += len(game_data)
         
-        # Now outcome is a float, so (outcome if ...) works perfectly
         return [
-            {
-                "state": s["state"], 
-                "pi": s["pi"], 
-                "z": float(outcome if s["turn"] == chess.WHITE else -outcome)
-            } 
+            {"state": s["state"], "pi": s["pi"], "z": float(outcome if s["turn"] == chess.WHITE else -outcome)} 
             for s in game_data
         ]
 
